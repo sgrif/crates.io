@@ -34,6 +34,19 @@ pub struct Version {
     pub yanked: bool,
 }
 
+table! {
+    versions {
+        id -> Serial,
+        crate_id -> Integer,
+        num -> VarChar,
+        updated_at -> BigInt,
+        created_at -> BigInt,
+        downloads -> Integer,
+        features -> VarChar,
+        yanked -> Bool,
+    }
+}
+
 pub enum Author {
     User(User),
     Name(String),

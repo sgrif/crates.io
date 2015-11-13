@@ -9,11 +9,13 @@ use oauth2;
 use r2d2;
 use s3;
 use curl::http;
+use yaqb::Connection;
 
 use {db, Config};
 
 pub struct App {
     pub database: db::Pool,
+    pub database_url: String,
     pub github: oauth2::Config,
     pub bucket: s3::Bucket,
     pub s3_proxy: Option<String>,
@@ -46,6 +48,7 @@ impl App {
         let repo = git2::Repository::open(&config.git_repo_checkout).unwrap();
         return App {
             database: db::pool(&config.db_url, db_config),
+            database_url: config.db_url.clone(),
             github: github,
             bucket: s3::Bucket::new(config.s3_bucket.clone(),
                                     config.s3_region.clone(),
@@ -66,6 +69,11 @@ impl App {
             Some(ref proxy) => handle.proxy(&proxy[..]),
             None => handle,
         }
+    }
+
+    pub fn new_connection(&self) -> Result<Connection, Box<Error+Send>> {
+        Connection::establish(&self.database_url)
+            .map_err(|e| Box::new(e) as Box<Error+Send>)
     }
 }
 

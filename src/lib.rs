@@ -20,6 +20,7 @@ extern crate s3;
 extern crate semver;
 extern crate time;
 extern crate url;
+#[macro_use] extern crate yaqb;
 
 extern crate conduit;
 extern crate conduit_conditional_get;
@@ -141,6 +142,7 @@ pub fn middleware(app: Arc<App>) -> MiddlewareBuilder {
                                                  env == Env::Production));
     m.add(app::AppMiddleware::new(app));
     m.add(db::TransactionMiddleware);
+    m.around(db::NewTransactionMiddleware::new());
     m.add(user::Middleware);
     if env != Env::Test {
         m.around(dist::Middleware::new());

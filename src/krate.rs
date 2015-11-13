@@ -14,12 +14,12 @@ use license_exprs;
 use pg::GenericConnection;
 use pg::rows::Row;
 use pg::types::{ToSql, Slice};
-use pg;
 use rustc_serialize::hex::ToHex;
 use rustc_serialize::json;
 use semver;
 use time::{Timespec, Duration};
 use url::{self, Url};
+use yaqb::*;
 
 use {Model, User, Keyword, Version};
 use app::{App, RequestApp};
@@ -34,7 +34,7 @@ use owner::{EncodableOwner, Owner, Rights, OwnerKind, Team, rights};
 use util::errors::{NotFound, CargoError};
 use util::{LimitErrorReader, HashingReader};
 use util::{RequestUtils, CargoResult, internal, ChainError, human};
-use version::EncodableVersion;
+use version::{EncodableVersion, versions};
 
 #[derive(Clone)]
 pub struct Crate {
@@ -52,6 +52,91 @@ pub struct Crate {
     pub keywords: Vec<String>,
     pub license: Option<String>,
     pub repository: Option<String>,
+}
+
+table! {
+    crates {
+        id -> Serial,
+        name -> VarChar,
+        user_id -> Integer,
+        updated_at -> BigInt,
+        created_at -> BigInt,
+        downloads -> Integer,
+        max_version -> VarChar,
+        description -> Nullable<VarChar>,
+        homepage -> Nullable<VarChar>,
+        documentation -> Nullable<VarChar>,
+        readme -> Nullable<VarChar>,
+        keywords -> Nullable<VarChar>,
+        license -> Nullable<VarChar>,
+        repository -> Nullable<VarChar>,
+    }
+}
+
+table! {
+    version_downloads {
+        id -> Serial,
+        version_id -> Integer,
+        downloads -> Integer,
+        counted -> Integer,
+        date -> BigInt,
+        processed -> Bool,
+    }
+}
+
+const USEC_PER_SEC: i64 = 1_000_000;
+const NSEC_PER_USEC: i64 = 1_000;
+
+// Number of seconds from 1970-01-01 to 2000-01-01
+const TIME_SEC_CONVERSION: i64 = 946684800;
+
+fn parse_time(t: i64) -> Timespec {
+    let mut sec = t / USEC_PER_SEC + TIME_SEC_CONVERSION;
+    let mut usec = t % USEC_PER_SEC;
+
+    if usec < 0 {
+        sec -= 1;
+        usec = USEC_PER_SEC + usec;
+    }
+
+    Timespec::new(sec, (usec * NSEC_PER_USEC) as i32)
+}
+
+impl Queriable<crates::SqlType> for Crate {
+    type Row = (i32, String, i32, i64, i64, i32, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+
+    fn build(row: Self::Row) -> Self {
+        let (id, name, user_id, raw_updated, raw_created, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository) = row;
+        let created_at = parse_time(raw_created);
+        let updated_at = parse_time(raw_updated);
+        let keywords = keywords.unwrap_or(String::new()).split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()).collect();
+        let max_version = semver::Version::parse(&max_version).unwrap();
+
+        Crate {
+            id: id,
+            name: name,
+            user_id: user_id,
+            updated_at: updated_at,
+            created_at: created_at,
+            downloads: downloads,
+            max_version: max_version,
+            description: description,
+            homepage: homepage,
+            documentation: documentation,
+            readme: readme,
+            keywords: keywords,
+            license: license,
+            repository: repository,
+        }
+    }
+}
+
+table! {
+    metadata (total_downloads) {
+        total_downloads -> BigInt,
+    }
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
@@ -583,33 +668,26 @@ pub fn index(req: &mut Request) -> CargoResult<Response> {
 
 /// Handles the `GET /summary` route.
 pub fn summary(req: &mut Request) -> CargoResult<Response> {
-    let tx = try!(req.tx());
-    let num_crates = {
-        let stmt = try!(tx.prepare("SELECT COUNT(*) FROM crates"));
-        let rows = try!(stmt.query(&[]));
-        rows.iter().next().unwrap().get("count")
-    };
-    let num_downloads = {
-        let stmt = try!(tx.prepare("SELECT total_downloads FROM metadata"));
-        let rows = try!(stmt.query(&[]));
-        rows.iter().next().unwrap().get("total_downloads")
-    };
+    use self::crates::dsl::*;
+    use self::metadata::dsl::*;
 
-    let to_crates = |stmt: pg::stmt::Statement| -> CargoResult<Vec<_>> {
-        let rows = try!(stmt.query(&[]));
-        Ok(rows.iter().map(|r| {
-            let krate: Crate = Model::from_row(&r);
-            krate.encodable(None)
-        }).collect::<Vec<EncodableCrate>>())
-    };
-    let new_crates = try!(tx.prepare("SELECT * FROM crates \
-                                        ORDER BY created_at DESC LIMIT 10"));
-    let just_updated = try!(tx.prepare("SELECT * FROM crates \
-                                        WHERE updated_at::timestamp(0) !=
-                                              created_at::timestamp(0)
-                                        ORDER BY updated_at DESC LIMIT 10"));
-    let most_downloaded = try!(tx.prepare("SELECT * FROM crates \
-                                           ORDER BY downloads DESC LIMIT 10"));
+    let conn = req.new_conn();
+    let num_crates = try!(conn.query_one(crates.count())).unwrap();
+    let num_downloads = try!(conn.query_one(metadata.select(total_downloads))).unwrap();
+
+    let new_crates: Vec<_> = try!(crates.order(created_at.desc()).limit(10)
+        .load(conn))
+        .map(|c: Crate| c.encodable(None))
+        .collect();
+    let just_updated: Vec<_> = try!(crates.filter(updated_at.ne(created_at))
+        .order(updated_at.desc())
+        .limit(10)
+        .load(conn))
+        .map(|c: Crate| c.encodable(None))
+        .collect();
+    let most_downloaded: Vec<_> = try!(crates.order(downloads.desc()).limit(10).load(conn))
+        .map(|c: Crate| c.encodable(None))
+        .collect();
 
     #[derive(RustcEncodable)]
     struct R {
@@ -622,9 +700,9 @@ pub fn summary(req: &mut Request) -> CargoResult<Response> {
     Ok(req.json(&R {
         num_downloads: num_downloads,
         num_crates: num_crates,
-        new_crates: try!(to_crates(new_crates)),
-        most_downloaded: try!(to_crates(most_downloaded)),
-        just_updated: try!(to_crates(just_updated)),
+        new_crates: new_crates,
+        most_downloaded: most_downloaded,
+        just_updated: just_updated,
     }))
 }
 
@@ -827,25 +905,22 @@ fn read_fill<R: Read + ?Sized>(r: &mut R, mut slice: &mut [u8])
     Ok(())
 }
 
+sql_function!(canon_crate_name, (a: VarChar) -> VarChar);
+
 /// Handles the `GET /crates/:crate_id/:version/download` route.
 pub fn download(req: &mut Request) -> CargoResult<Response> {
+    use yaqb::expression::dsl::*;
+    use self::version_downloads::downloads;
+
     let crate_name = &req.params()["crate_id"];
     let version = &req.params()["version"];
-    let tx = try!(req.tx());
-    let stmt = try!(tx.prepare("SELECT versions.id as version_id
-                                FROM crates
-                                INNER JOIN versions ON
-                                    crates.id = versions.crate_id
-                                WHERE canon_crate_name(crates.name) =
-                                      canon_crate_name($1)
-                                  AND versions.num = $2
-                                LIMIT 1"));
-    let rows = try!(stmt.query(&[crate_name, version]));
-    let row = try!(rows.iter().next().chain_error(|| {
-        human("crate or version not found")
-    }));
-    let version_id: i32 = row.get("version_id");
-    let now = ::now();
+    let conn = req.new_conn();
+
+    let version_id = try!(crates::table.inner_join(versions)
+        .filter(canon_crate_name(crates::name).eq(canon_crate_name(crate_name)))
+        .filter(versions::num.eq(version))
+        .first(&conn))
+        .chain_error(|| human("crate or version not found"));
 
     // Bump download counts.
     //
@@ -858,15 +933,13 @@ pub fn download(req: &mut Request) -> CargoResult<Response> {
     // Also, we only update the counter for *today*, nothing else. We have lots
     // of other counters, but they're all updated later on via the
     // update-downloads script.
-    let amt = try!(tx.execute("UPDATE version_downloads
-                               SET downloads = downloads + 1
-                               WHERE version_id = $1 AND date($2) = date(date)",
-                              &[&version_id, &now]));
-    if amt == 0 {
-        try!(tx.execute("INSERT INTO version_downloads
-                         (version_id, downloads, counted, date, processed)
-                         VALUES ($1, 1, 0, date($2), false)",
-                        &[&version_id, &now]));
+    let target = version_downloads::table.filter(version_id.eq(version_id))
+        .filter(date(now()).eq(date(version_downloads::date)));
+    let updated_rows = try!(conn.update_returning_count(&target, downloads.eq(downloads + 1)));
+
+    if updated_rows == 0 {
+        let new_download = NewVersionDownload::new(version_id);
+        try!(conn.insert_returning_count(&version_downloads::table, &[new_download]));
     }
 
     // Now that we've done our business, redirect to the actual data.

@@ -2,14 +2,16 @@ use std::cell::Cell;
 use std::error::Error;
 use std::mem;
 use std::sync::Arc;
+use std::rc::Rc;
 
 use pg;
 use pg::GenericConnection;
 use r2d2;
 use r2d2_postgres;
 use r2d2_postgres::PostgresConnectionManager as PCM;
-use conduit::{Request, Response};
-use conduit_middleware::Middleware;
+use conduit::{Request, Response, Handler};
+use conduit_middleware::{Middleware, AroundMiddleware};
+use yaqb::{Connection, TransactionError};
 
 use app::{App, RequestApp};
 use util::{CargoResult, LazyCell, internal};
@@ -106,11 +108,45 @@ impl Middleware for TransactionMiddleware {
     }
 }
 
+pub struct NewTransactionMiddleware {
+    handler: Option<Box<Handler>>,
+}
+
+impl NewTransactionMiddleware {
+    pub fn new() -> Self {
+        NewTransactionMiddleware {
+            handler: None,
+        }
+    }
+}
+
+impl AroundMiddleware for NewTransactionMiddleware {
+    fn with_handler(&mut self, handler: Box<Handler>) {
+        self.handler = Some(handler);
+    }
+}
+
+impl Handler for NewTransactionMiddleware {
+    fn call(&self, req: &mut Request) -> Result<Response, Box<Error+Send>> {
+        let connection = Rc::new(try!(req.app().new_connection()));
+        connection.transaction(|| {
+            req.mut_extensions().insert(connection.clone());
+            self.handler.as_ref().unwrap().call(req)
+        })
+        .map_err(|e| match e {
+            TransactionError::CouldntCreateTransaction(e) => Box::new(e) as Box<Error+Send>,
+            TransactionError::UserReturnedError(e) => e,
+        })
+    }
+}
+
 pub trait RequestTransaction {
     /// Return the lazily initialized postgres connection for this request.
     ///
     /// The connection will live for the lifetime of the request.
     fn db_conn(&self) -> CargoResult<&pg::Connection>;
+
+    fn new_conn(&self) -> &Connection;
 
     /// Return the lazily initialized postgres transaction for this request.
     ///
@@ -129,6 +165,12 @@ impl<'a> RequestTransaction for Request + 'a {
         self.extensions().find::<Transaction>()
             .expect("Transaction not present in request")
             .conn()
+    }
+
+    fn new_conn(&self) -> &Connection {
+        self.extensions().find::<Rc<Connection>>()
+            .expect("Connection not present in request")
+            .as_ref()
     }
 
     fn tx(&self) -> CargoResult<&GenericConnection> {
