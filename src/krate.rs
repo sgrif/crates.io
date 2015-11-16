@@ -20,6 +20,8 @@ use semver;
 use time::{Timespec, Duration};
 use url::{self, Url};
 use yaqb::*;
+use yaqb::query_builder::update;
+use yaqb::types::structs::PgTimestamp;
 
 use {Model, User, Keyword, Version};
 use app::{App, RequestApp};
@@ -59,8 +61,8 @@ table! {
         id -> Serial,
         name -> VarChar,
         user_id -> Integer,
-        updated_at -> BigInt,
-        created_at -> BigInt,
+        updated_at -> Timestamp,
+        created_at -> Timestamp,
         downloads -> Integer,
         max_version -> VarChar,
         description -> Nullable<VarChar>,
@@ -79,8 +81,30 @@ table! {
         version_id -> Integer,
         downloads -> Integer,
         counted -> Integer,
-        date -> BigInt,
+        date -> Timestamp,
         processed -> Bool,
+    }
+}
+
+joinable!(crates -> versions (id = crate_id));
+select_column_workaround!(crates -> versions (id, name, user_id, updated_at, created_at, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository));
+select_column_workaround!(versions -> crates (id, crate_id, num, updated_at, created_at, downloads, features, yanked));
+
+struct NewVersionDownload {
+    version_id: i32,
+}
+
+impl NewVersionDownload {
+    fn new(version_id: i32) -> Self {
+        NewVersionDownload {
+            version_id: version_id,
+        }
+    }
+}
+
+insertable! {
+    NewVersionDownload => version_downloads {
+        version_id -> i32,
     }
 }
 
@@ -103,12 +127,12 @@ fn parse_time(t: i64) -> Timespec {
 }
 
 impl Queriable<crates::SqlType> for Crate {
-    type Row = (i32, String, i32, i64, i64, i32, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+    type Row = (i32, String, i32, PgTimestamp, PgTimestamp, i32, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
     fn build(row: Self::Row) -> Self {
-        let (id, name, user_id, raw_updated, raw_created, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository) = row;
-        let created_at = parse_time(raw_created);
-        let updated_at = parse_time(raw_updated);
+        let (id, name, user_id, updated_at, created_at, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository) = row;
+        let created_at = parse_time(created_at.0);
+        let updated_at = parse_time(updated_at.0);
         let keywords = keywords.unwrap_or(String::new()).split(',')
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string()).collect();
@@ -916,11 +940,13 @@ pub fn download(req: &mut Request) -> CargoResult<Response> {
     let version = &req.params()["version"];
     let conn = req.new_conn();
 
-    let version_id = try!(crates::table.inner_join(versions)
+    let version_id = try!(crates::table.inner_join(versions::table)
+        .select(versions::id)
         .filter(canon_crate_name(crates::name).eq(canon_crate_name(crate_name)))
         .filter(versions::num.eq(version))
-        .first(&conn))
-        .chain_error(|| human("crate or version not found"));
+        .first(&conn)
+        .map_err(|e| e.into())
+        .and_then(|r| r.chain_error(|| human("crate or version not found"))));
 
     // Bump download counts.
     //
@@ -933,9 +959,11 @@ pub fn download(req: &mut Request) -> CargoResult<Response> {
     // Also, we only update the counter for *today*, nothing else. We have lots
     // of other counters, but they're all updated later on via the
     // update-downloads script.
-    let target = version_downloads::table.filter(version_id.eq(version_id))
-        .filter(date(now()).eq(date(version_downloads::date)));
-    let updated_rows = try!(conn.update_returning_count(&target, downloads.eq(downloads + 1)));
+    let target = version_downloads::table
+        .filter(version_downloads::version_id.eq(version_id))
+        .filter(date(now).eq(date(version_downloads::date)));
+    let command = update(target).set(downloads.eq(downloads + 1));
+    let updated_rows = try!(conn.execute_returning_count(&command));
 
     if updated_rows == 0 {
         let new_download = NewVersionDownload::new(version_id);
