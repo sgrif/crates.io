@@ -56,6 +56,18 @@ pub struct Crate {
     pub repository: Option<String>,
 }
 
+struct NewCrate<'a> {
+    name: &'a str,
+    user_id: i32,
+    description: Option<&'a str>,
+    homepage: Option<&'a str>,
+    documentation: Option<&'a str>,
+    readme: Option<&'a str>,
+    keywords: Option<&'a str>,
+    repository: Option<&'a str>,
+    license: Option<&'a str>,
+}
+
 table! {
     crates {
         id -> Serial,
@@ -200,118 +212,112 @@ impl Crate {
         Ok(Model::from_row(&row))
     }
 
-    // pub fn new_find_or_insert(conn: &Connection,
-    //                       name: &str,
-    //                       user_id: i32,
-    //                       description: &Option<String>,
-    //                       homepage: &Option<String>,
-    //                       documentation: &Option<String>,
-    //                       readme: &Option<String>,
-    //                       keywords: &[String],
-    //                       repository: &Option<String>,
-    //                       license: &Option<String>,
-    //                       license_file: &Option<String>) -> CargoResult<Crate> {
-    //     let description = description.as_ref().map(|s| &s[..]);
-    //     let homepage = homepage.as_ref().map(|s| &s[..]);
-    //     let documentation = documentation.as_ref().map(|s| &s[..]);
-    //     let readme = readme.as_ref().map(|s| &s[..]);
-    //     let repository = repository.as_ref().map(|s| &s[..]);
-    //     let mut license = license.as_ref().map(|s| &s[..]);
-    //     let license_file = license_file.as_ref().map(|s| &s[..]);
-    //     let keywords = keywords.join(",");
-    //     try!(validate_url(homepage, "homepage"));
-    //     try!(validate_url(documentation, "documentation"));
-    //     try!(validate_url(repository, "repository"));
+    pub fn new_find_or_insert(conn: &Connection,
+                          name: &str,
+                          user_id: i32,
+                          description: &Option<String>,
+                          homepage: &Option<String>,
+                          documentation: &Option<String>,
+                          readme: &Option<String>,
+                          keywords: &[String],
+                          repository: &Option<String>,
+                          license: &Option<String>,
+                          license_file: &Option<String>) -> CargoResult<Crate> {
+        let description = description.as_ref().map(|s| &s[..]);
+        let homepage = homepage.as_ref().map(|s| &s[..]);
+        let documentation = documentation.as_ref().map(|s| &s[..]);
+        let readme = readme.as_ref().map(|s| &s[..]);
+        let repository = repository.as_ref().map(|s| &s[..]);
+        let mut license = license.as_ref().map(|s| &s[..]);
+        let license_file = license_file.as_ref().map(|s| &s[..]);
+        let keywords = keywords.join(",");
+        try!(validate_url(homepage, "homepage"));
+        try!(validate_url(documentation, "documentation"));
+        try!(validate_url(repository, "repository"));
 
-    //     match license {
-    //         // If a license is given, validate it to make sure it's actually a
-    //         // valid license
-    //         Some(..) => try!(validate_license(license)),
+        match license {
+            // If a license is given, validate it to make sure it's actually a
+            // valid license
+            Some(..) => try!(validate_license(license)),
 
-    //         // If no license is given, but a license file is given, flag this
-    //         // crate as having a nonstandard license. Note that we don't
-    //         // actually do anything else with license_file currently.
-    //         None if license_file.is_some() => {
-    //             license = Some("non-standard");
-    //         }
+            // If no license is given, but a license file is given, flag this
+            // crate as having a nonstandard license. Note that we don't
+            // actually do anything else with license_file currently.
+            None if license_file.is_some() => {
+                license = Some("non-standard");
+            }
 
-    //         None => {}
-    //     }
+            None => {}
+        }
 
-    //     // TODO: like with users, this is sadly racy
-    //     let target = crates::table.filter(canon_crate_name(crates::name)
-    //                                       .eq(canon_crate_name(name)));
-    //     let command = update(target).set((
-    //             crates::documentation.eq(documentation),
-    //             crates::homepage.eq(homepage),
-    //             crates::description.eq(description),
-    //             crates::readme.eq(readme),
-    //             crates::keywords.eq(keywords),
-    //             crates::license.eq(license),
-    //             crates::repository.eq(repository),
-    //             crates::name.eq(name),
-    //         ));
-    //     let maybe_crate = try!(connection.query_one(command));
-    //     let ret = try!(maybe_crate.map(Ok).unwrap_or_else(|| {
+        // TODO: like with users, this is sadly racy
+        let target = crates::table.filter(canon_crate_name(crates::name)
+                                          .eq(canon_crate_name(name)));
+        let command = update(target).set((
+                crates::documentation.eq(documentation),
+                crates::homepage.eq(homepage),
+                crates::description.eq(description),
+                crates::readme.eq(readme),
+                crates::keywords.eq(keywords),
+                crates::license.eq(license),
+                crates::repository.eq(repository),
+                crates::name.eq(name),
+            ));
+        let maybe_crate = try!(conn.query_one(command));
+        let ret = try!(maybe_crate.map(Ok).unwrap_or_else(|| {
 
-    //         // Blacklist the current set of crates in the rust distribution
-    //         const RESERVED: &'static str = include_str!("reserved_crates.txt");
+            // Blacklist the current set of crates in the rust distribution
+            const RESERVED: &'static str = include_str!("reserved_crates.txt");
 
-    //         if RESERVED.lines().any(|krate| name == krate) {
-    //             return Err(human("cannot upload a crate with a reserved name"))
-    //         }
+            if RESERVED.lines().any(|krate| name == krate) {
+                return Err(human("cannot upload a crate with a reserved name"))
+            }
 
-    //         let new_crate = NewCrate::new(name, user_id, description, homepage,
-    //                                       documentation, readme, keywords,
-    //                                       repository, license);
-    //         connection.insert(&crates::table, &[new_crate])
-    //             .and_then(|r| r.nth(0).chain_error(|| internal("no crate returned")))
-    //     }));
+            let new_crate = NewCrate::new(name, user_id, description, homepage,
+                                          documentation, readme, keywords,
+                                          repository, license);
+            conn.insert(&crates::table, &[new_crate])
+                .and_then(|r| r.nth(0).chain_error(|| internal("no crate returned")))
+        }));
 
-    //     let new_crate_owner = NewCrateOwner::new(
-    //     try!(connection.insert(&crate_owners::table, &[new_crate_owner]));
+        ret.add_owner(&CrateOwner::user(user_id));
 
-    //     try!(conn.execute("INSERT INTO crate_owners
-    //                        (crate_id, owner_id, created_by, created_at,
-    //                          updated_at, deleted, owner_kind)
-    //                        VALUES ($1, $2, $2, $3, $3, FALSE, $4)",
-    //                       &[&ret.id, &user_id, &now, &(OwnerKind::User as i32)]));
-    //     return Ok(ret);
+        return Ok(ret);
 
-    //     fn validate_url(url: Option<&str>, field: &str) -> CargoResult<()> {
-    //         let url = match url {
-    //             Some(s) => s,
-    //             None => return Ok(())
-    //         };
-    //         let url = try!(Url::parse(url).map_err(|_| {
-    //             human(format!("`{}` is not a valid url: `{}`", field, url))
-    //         }));
-    //         match &url.scheme[..] {
-    //             "http" | "https" => {}
-    //             s => return Err(human(format!("`{}` has an invalid url \
-    //                                            scheme: `{}`", field, s)))
-    //         }
-    //         match url.scheme_data {
-    //             url::SchemeData::Relative(..) => {}
-    //             url::SchemeData::NonRelative(..) => {
-    //                 return Err(human(format!("`{}` must have relative scheme \
-    //                                           data: {}", field, url)))
-    //             }
-    //         }
-    //         Ok(())
-    //     }
+        fn validate_url(url: Option<&str>, field: &str) -> CargoResult<()> {
+            let url = match url {
+                Some(s) => s,
+                None => return Ok(())
+            };
+            let url = try!(Url::parse(url).map_err(|_| {
+                human(format!("`{}` is not a valid url: `{}`", field, url))
+            }));
+            match &url.scheme[..] {
+                "http" | "https" => {}
+                s => return Err(human(format!("`{}` has an invalid url \
+                                               scheme: `{}`", field, s)))
+            }
+            match url.scheme_data {
+                url::SchemeData::Relative(..) => {}
+                url::SchemeData::NonRelative(..) => {
+                    return Err(human(format!("`{}` must have relative scheme \
+                                              data: {}", field, url)))
+                }
+            }
+            Ok(())
+        }
 
-    //     fn validate_license(license: Option<&str>) -> CargoResult<()> {
-    //         license.iter().flat_map(|s| s.split("/"))
-    //                .map(license_exprs::validate_license_expr)
-    //                .collect::<Result<Vec<_>, _>>()
-    //                .map(|_| ())
-    //                .map_err(|e| human(format!("{}; see http://opensource.org/licenses \
-    //                                               for options, and http://spdx.org/licenses/ \
-    //                                               for their identifiers", e)))
-    //     }
+        fn validate_license(license: Option<&str>) -> CargoResult<()> {
+            license.iter().flat_map(|s| s.split("/"))
+                   .map(license_exprs::validate_license_expr)
+                   .collect::<Result<Vec<_>, _>>()
+                   .map(|_| ())
+                   .map_err(|e| human(format!("{}; see http://opensource.org/licenses \
+                                                  for options, and http://spdx.org/licenses/ \
+                                                  for their identifiers", e)))
+        }
+    }
 
-    // }
     pub fn find_or_insert(conn: &GenericConnection,
                           name: &str,
                           user_id: i32,
