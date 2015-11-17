@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::io::prelude::*;
 use std::fs::{self, File};
 use std::iter::repeat;
@@ -479,8 +480,8 @@ fn summary_doesnt_die() {
 fn download() {
     let (_b, app, middle) = ::app();
     let mut req = ::req(app, Method::Get, "/api/v1/crates/foo/1.0.0/download");
-    ::mock_user(&mut req, ::user("foo"));
-    ::mock_crate(&mut req, ::krate("foo"));
+    ::new_mock_user(&mut req, ::user("foo"));
+    ::new_mock_crate(&mut req, ::krate("foo"));
     let resp = t_resp!(middle.call(&mut req));
     assert_eq!(resp.status.0, 302);
 

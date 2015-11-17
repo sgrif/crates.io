@@ -15,6 +15,7 @@ use util::errors::NotFound;
 use util::{RequestUtils, CargoResult, internal, ChainError, human};
 use version::EncodableVersion;
 use http;
+use yaqb::*;
 
 pub use self::middleware::{Middleware, RequestUser};
 
@@ -30,6 +31,72 @@ pub struct User {
     pub gh_access_token: String,
     pub api_token: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewUser<'a> {
+    pub gh_login: &'a str,
+    pub name: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub gh_avatar: Option<&'a str>,
+    pub gh_access_token: &'a str,
+    pub api_token: &'a str,
+}
+
+impl<'a> NewUser<'a> {
+    pub fn new(
+        gh_login: &'a str,
+        name: Option<&'a str>,
+        email: Option<&'a str>,
+        avatar: Option<&'a str>,
+        gh_access_token: &'a str,
+        api_token: &'a str,
+    ) -> Self {
+        NewUser {
+            gh_login: gh_login,
+            name: name,
+            email: email,
+            gh_avatar: avatar,
+            gh_access_token: gh_access_token,
+            api_token: api_token,
+        }
+    }
+}
+
+table! {
+    users {
+        id -> Serial,
+        email -> Nullable<VarChar>,
+        gh_access_token -> VarChar,
+        api_token -> VarChar,
+        gh_login -> VarChar,
+        name -> Nullable<VarChar>,
+        gh_avatar -> Nullable<VarChar>,
+    }
+}
+
+insertable! {
+    NewUser<'a> => users {
+        gh_login -> &'a str,
+        name -> Option<&'a str>,
+        email -> Option<&'a str>,
+        gh_avatar -> Option<&'a str>,
+        gh_access_token -> &'a str,
+        api_token -> &'a str,
+    }
+}
+
+queriable! {
+    User {
+        id -> i32,
+        email -> Option<String>,
+        gh_access_token -> String,
+        api_token -> String,
+        gh_login -> String,
+        name -> Option<String>,
+        avatar -> Option<String>,
+    }
+}
+
 
 #[derive(RustcDecodable, RustcEncodable)]
 pub struct EncodableUser {
@@ -60,6 +127,36 @@ impl User {
                         .map(|r| Model::from_row(&r)).chain_error(|| {
             NotFound
         })
+    }
+
+    pub fn new_find_or_insert(conn: &Connection,
+                              login: &str,
+                              email: Option<&str>,
+                              name: Option<&str>,
+                              avatar: Option<&str>,
+                              access_token: &str,
+                              api_token: &str) -> CargoResult<User> {
+        use self::users::{gh_login, gh_access_token, gh_avatar};
+        use yaqb::query_builder::update;
+        // TODO: this is racy, but it looks like any other solution is...
+        //       interesting! For now just do the racy thing which will report
+        //       more errors than it needs to.
+
+        let target = users::table.filter(gh_login.eq(login));
+        let command = update(target).set((
+                gh_access_token.eq(access_token),
+                users::email.eq(email),
+                users::name.eq(name),
+                gh_avatar.eq(avatar),
+            ));
+        let maybe_user = try!(conn.query_one(command));
+
+        maybe_user.map(Ok).unwrap_or_else(|| {
+            let new_user = NewUser::new(login, name, email,
+                                        avatar, access_token, api_token);
+            conn.insert(&users::table, &[new_user])
+                .map(|mut r| r.nth(0).unwrap())
+        }).map_err(|e| e.into())
     }
 
     pub fn find_or_insert(conn: &GenericConnection,
