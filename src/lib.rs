@@ -39,7 +39,7 @@ pub use self::download::{CrateDownload, VersionDownload};
 pub use self::keyword::Keyword;
 pub use self::krate::Crate;
 pub use self::model::Model;
-pub use self::user::User;
+pub use self::user::{User, NewUser};
 pub use self::version::Version;
 
 use std::sync::Arc;

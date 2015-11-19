@@ -30,6 +30,7 @@ use dependency::{Dependency, EncodableDependency};
 use download::{VersionDownload, EncodableVersionDownload};
 use git;
 use keyword::EncodableKeyword;
+use model::{update_or_insert, UpdateOrInsert};
 use upload;
 use user::RequestUser;
 use owner::{EncodableOwner, Owner, Rights, OwnerKind, Team, rights};
@@ -56,7 +57,8 @@ pub struct Crate {
     pub repository: Option<String>,
 }
 
-struct NewCrate<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct NewCrate<'a> {
     name: &'a str,
     user_id: i32,
     description: Option<&'a str>,
@@ -66,6 +68,33 @@ struct NewCrate<'a> {
     keywords: Option<&'a str>,
     repository: Option<&'a str>,
     license: Option<&'a str>,
+}
+
+impl<'a> NewCrate<'a> {
+    pub fn new(
+        name: &'a str,
+        user_id: i32,
+        description: Option<&'a str>,
+        homepage: Option<&'a str>,
+        documentation: Option<&'a str>,
+        readme: Option<&'a str>,
+        keywords: Option<&'a str>,
+        repository: Option<&'a str>,
+        license: Option<&'a str>,
+        license_file: Option<&'a str>,
+    ) -> CargoResult<Self> {
+        Ok(NewCrate {
+            name: name,
+            user_id: user_id,
+            description: description,
+            homepage: homepage,
+            documentation: documentation,
+            readme: readme,
+            keywords: keywords,
+            repository: repository,
+            license: license,
+        })
+    }
 }
 
 table! {
@@ -87,6 +116,20 @@ table! {
     }
 }
 
+insertable! {
+    NewCrate<'a> => crates {
+        name -> &'a str,
+        user_id -> i32,
+        description -> Option<&'a str>,
+        homepage -> Option<&'a str>,
+        documentation -> Option<&'a str>,
+        readme -> Option<&'a str>,
+        keywords -> Option<&'a str>,
+        repository -> Option<&'a str>,
+        license -> Option<&'a str>,
+    }
+}
+
 table! {
     version_downloads {
         id -> Serial,
@@ -101,6 +144,37 @@ table! {
 joinable!(crates -> versions (id = crate_id));
 select_column_workaround!(crates -> versions (id, name, user_id, updated_at, created_at, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository));
 select_column_workaround!(versions -> crates (id, crate_id, num, updated_at, created_at, downloads, features, yanked));
+
+use yaqb::expression::predicates::Eq;
+use yaqb::expression::bound::Bound;
+
+impl<'a> ::yaqb::query_builder::AsChangeset for NewCrate<'a> {
+    type Changeset = (
+        Eq<crates::name, Bound<types::VarChar, &'a str>>,
+        Eq<crates::user_id, Bound<types::Integer, i32>>,
+        Eq<crates::description, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::homepage, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::documentation, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::readme, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::keywords, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::repository, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<crates::license, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+    );
+
+    fn as_changeset(self) -> Self::Changeset {
+        (
+            crates::name.eq(self.name),
+            crates::user_id.eq(self.user_id),
+            crates::description.eq(self.description),
+            crates::homepage.eq(self.homepage),
+            crates::documentation.eq(self.documentation),
+            crates::readme.eq(self.readme),
+            crates::keywords.eq(self.keywords),
+            crates::repository.eq(self.repository),
+            crates::license.eq(self.license),
+        )
+    }
+}
 
 struct NewVersionDownload {
     version_id: i32,
@@ -212,110 +286,42 @@ impl Crate {
         Ok(Model::from_row(&row))
     }
 
-    pub fn new_find_or_insert(conn: &Connection,
-                          name: &str,
-                          user_id: i32,
-                          description: &Option<String>,
-                          homepage: &Option<String>,
-                          documentation: &Option<String>,
-                          readme: &Option<String>,
-                          keywords: &[String],
-                          repository: &Option<String>,
-                          license: &Option<String>,
-                          license_file: &Option<String>) -> CargoResult<Crate> {
-        let description = description.as_ref().map(|s| &s[..]);
-        let homepage = homepage.as_ref().map(|s| &s[..]);
-        let documentation = documentation.as_ref().map(|s| &s[..]);
-        let readme = readme.as_ref().map(|s| &s[..]);
-        let repository = repository.as_ref().map(|s| &s[..]);
-        let mut license = license.as_ref().map(|s| &s[..]);
-        let license_file = license_file.as_ref().map(|s| &s[..]);
-        let keywords = keywords.join(",");
-        try!(validate_url(homepage, "homepage"));
-        try!(validate_url(documentation, "documentation"));
-        try!(validate_url(repository, "repository"));
-
-        match license {
-            // If a license is given, validate it to make sure it's actually a
-            // valid license
-            Some(..) => try!(validate_license(license)),
-
-            // If no license is given, but a license file is given, flag this
-            // crate as having a nonstandard license. Note that we don't
-            // actually do anything else with license_file currently.
-            None if license_file.is_some() => {
-                license = Some("non-standard");
-            }
-
-            None => {}
-        }
-
+    pub fn new_find_or_insert(conn: &Connection, new_crate: NewCrate, user_id: i32)
+        -> CargoResult<Crate>
+    {
         // TODO: like with users, this is sadly racy
         let target = crates::table.filter(canon_crate_name(crates::name)
-                                          .eq(canon_crate_name(name)));
-        let command = update(target).set((
-                crates::documentation.eq(documentation),
-                crates::homepage.eq(homepage),
-                crates::description.eq(description),
-                crates::readme.eq(readme),
-                crates::keywords.eq(keywords),
-                crates::license.eq(license),
-                crates::repository.eq(repository),
-                crates::name.eq(name),
-            ));
-        let maybe_crate = try!(conn.query_one(command));
-        let ret = try!(maybe_crate.map(Ok).unwrap_or_else(|| {
+                                          .eq(canon_crate_name(&new_crate.name)));
+        conn.transaction(|| {
+            match try!(update_or_insert(conn, target, &[new_crate])) {
+                UpdateOrInsert::Updated(krate) => Ok(krate),
+                UpdateOrInsert::Inserted(krate) => {
+                    // Blacklist the current set of crates in the rust distribution
+                    const RESERVED: &'static str = include_str!("reserved_crates.txt");
+                    let krate: Crate = krate;
 
-            // Blacklist the current set of crates in the rust distribution
-            const RESERVED: &'static str = include_str!("reserved_crates.txt");
-
-            if RESERVED.lines().any(|krate| name == krate) {
-                return Err(human("cannot upload a crate with a reserved name"))
-            }
-
-            let new_crate = NewCrate::new(name, user_id, description, homepage,
-                                          documentation, readme, keywords,
-                                          repository, license);
-            conn.insert(&crates::table, &[new_crate])
-                .and_then(|r| r.nth(0).chain_error(|| internal("no crate returned")))
-        }));
-
-        ret.add_owner(&CrateOwner::user(user_id));
-
-        return Ok(ret);
-
-        fn validate_url(url: Option<&str>, field: &str) -> CargoResult<()> {
-            let url = match url {
-                Some(s) => s,
-                None => return Ok(())
-            };
-            let url = try!(Url::parse(url).map_err(|_| {
-                human(format!("`{}` is not a valid url: `{}`", field, url))
-            }));
-            match &url.scheme[..] {
-                "http" | "https" => {}
-                s => return Err(human(format!("`{}` has an invalid url \
-                                               scheme: `{}`", field, s)))
-            }
-            match url.scheme_data {
-                url::SchemeData::Relative(..) => {}
-                url::SchemeData::NonRelative(..) => {
-                    return Err(human(format!("`{}` must have relative scheme \
-                                              data: {}", field, url)))
+                    if RESERVED.lines().any(|line| krate.name == line) {
+                        Err(human("cannot upload a crate with a reserved name"))
+                    } else {
+                        try!(krate.add_owner(conn, user_id));
+                        Ok(krate)
+                    }
                 }
             }
-            Ok(())
-        }
+        }).map_err(|e| match e {
+            TransactionError::CouldntCreateTransaction(e) => e.into(),
+            TransactionError::UserReturnedError(e) => e,
+        })
+    }
 
-        fn validate_license(license: Option<&str>) -> CargoResult<()> {
-            license.iter().flat_map(|s| s.split("/"))
-                   .map(license_exprs::validate_license_expr)
-                   .collect::<Result<Vec<_>, _>>()
-                   .map(|_| ())
-                   .map_err(|e| human(format!("{}; see http://opensource.org/licenses \
-                                                  for options, and http://spdx.org/licenses/ \
-                                                  for their identifiers", e)))
-        }
+    fn add_owner(&self, conn: &Connection, user_id: i32) -> CargoResult<()> {
+        try!(conn.query_sql_params::<types::Integer, i32, (types::Integer, types::Integer, types::Integer), _>
+            ("INSERT INTO crate_owners
+               (crate_id, owner_id, created_by, created_at,
+                 updated_at, deleted, owner_kind)
+               VALUES ($1, $2, $2, NOW(), NOW(), FALSE, $3)",
+               &(self.id, user_id, OwnerKind::User as i32)));
+        Ok(())
     }
 
     pub fn find_or_insert(conn: &GenericConnection,

@@ -27,7 +27,7 @@ use conduit_test::MockRequest;
 use cargo_registry::app::App;
 use cargo_registry::db::{self, RequestTransaction};
 use cargo_registry::dependency::Kind;
-use cargo_registry::{User, Crate, Version, Keyword, Dependency};
+use cargo_registry::{NewUser, User, Crate, Version, Keyword, Dependency};
 use cargo_registry::upload as u;
 
 macro_rules! t {
@@ -216,13 +216,15 @@ fn krate(name: &str) -> Crate {
 }
 
 fn new_mock_user(req: &mut Request, u: User) -> User {
-    let u = User::new_find_or_insert(req.new_conn(),
-                                 &u.gh_login,
-                                 u.email.as_ref().map(|s| &s[..]),
-                                 u.name.as_ref().map(|s| &s[..]),
-                                 u.avatar.as_ref().map(|s| &s[..]),
-                                 &u.gh_access_token,
-                                 &u.api_token).unwrap();
+    let new_user = NewUser::new(
+        &u.gh_login,
+        u.email.as_ref().map(|s| &s[..]),
+        u.name.as_ref().map(|s| &s[..]),
+        u.avatar.as_ref().map(|s| &s[..]),
+        &u.gh_access_token,
+        &u.api_token,
+    );
+    let u = User::new_find_or_insert(req.new_conn(), new_user).unwrap();
     req.mut_extensions().insert(u.clone());
     return u;
 }
@@ -240,7 +242,7 @@ fn mock_user(req: &mut Request, u: User) -> User {
 }
 
 fn new_mock_crate(req: &mut Request, krate: Crate) -> (Crate, Version) {
-    mock_crate_vers(req, krate, &semver::Version::parse("1.0.0").unwrap())
+    new_mock_crate_vers(req, krate, &semver::Version::parse("1.0.0").unwrap())
 }
 
 fn mock_crate(req: &mut Request, krate: Crate) -> (Crate, Version) {

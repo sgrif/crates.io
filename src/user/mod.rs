@@ -6,16 +6,17 @@ use pg::GenericConnection;
 use pg::rows::Row;
 use pg::types::Slice;
 use rand::{thread_rng, Rng};
+use yaqb::*;
 
 use {Model, Version};
 use app::RequestApp;
 use db::RequestTransaction;
 use krate::{Crate, EncodableCrate};
+use model::update_or_insert;
 use util::errors::NotFound;
 use util::{RequestUtils, CargoResult, internal, ChainError, human};
 use version::EncodableVersion;
 use http;
-use yaqb::*;
 
 pub use self::middleware::{Middleware, RequestUser};
 
@@ -32,7 +33,7 @@ pub struct User {
     pub api_token: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NewUser<'a> {
     pub gh_login: &'a str,
     pub name: Option<&'a str>,
@@ -59,6 +60,31 @@ impl<'a> NewUser<'a> {
             gh_access_token: gh_access_token,
             api_token: api_token,
         }
+    }
+}
+
+use yaqb::expression::predicates::Eq;
+use yaqb::expression::bound::Bound;
+
+impl<'a> ::yaqb::query_builder::AsChangeset for NewUser<'a> {
+    type Changeset = (
+        Eq<users::gh_login, Bound<types::VarChar, &'a str>>,
+        Eq<users::name, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<users::email, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<users::gh_avatar, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
+        Eq<users::gh_access_token, Bound<types::VarChar, &'a str>>,
+        Eq<users::api_token, Bound<types::VarChar, &'a str>>,
+    );
+
+    fn as_changeset(self) -> Self::Changeset {
+        (
+            users::gh_login.eq(self.gh_login),
+            users::name.eq(self.name),
+            users::email.eq(self.email),
+            users::gh_avatar.eq(self.gh_avatar),
+            users::gh_access_token.eq(self.gh_access_token),
+            users::api_token.eq(self.api_token),
+        )
     }
 }
 
@@ -129,34 +155,18 @@ impl User {
         })
     }
 
-    pub fn new_find_or_insert(conn: &Connection,
-                              login: &str,
-                              email: Option<&str>,
-                              name: Option<&str>,
-                              avatar: Option<&str>,
-                              access_token: &str,
-                              api_token: &str) -> CargoResult<User> {
+    pub fn new_find_or_insert(conn: &Connection, new_user: NewUser) -> CargoResult<User> {
         use self::users::{gh_login, gh_access_token, gh_avatar};
         use yaqb::query_builder::update;
         // TODO: this is racy, but it looks like any other solution is...
         //       interesting! For now just do the racy thing which will report
         //       more errors than it needs to.
 
-        let target = users::table.filter(gh_login.eq(login));
-        let command = update(target).set((
-                gh_access_token.eq(access_token),
-                users::email.eq(email),
-                users::name.eq(name),
-                gh_avatar.eq(avatar),
-            ));
-        let maybe_user = try!(conn.query_one(command));
-
-        maybe_user.map(Ok).unwrap_or_else(|| {
-            let new_user = NewUser::new(login, name, email,
-                                        avatar, access_token, api_token);
-            conn.insert(&users::table, &[new_user])
-                .map(|mut r| r.nth(0).unwrap())
-        }).map_err(|e| e.into())
+        let target = users::table.filter(gh_login.eq(new_user.gh_login));
+        match update_or_insert(conn, target, &[new_user]) {
+            Ok(res) => Ok(res.record()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn find_or_insert(conn: &GenericConnection,
