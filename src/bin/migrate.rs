@@ -536,6 +536,21 @@ fn migrations() -> Vec<Migration> {
             "));
             Ok(())
         }),
+        Migration::new(20151120163708, |tx| {
+            try!(tx.batch_execute("
+                ALTER TABLE version_downloads ALTER counted SET DEFAULT 0;
+                ALTER TABLE version_downloads ALTER processed SET DEFAULT 'f';
+                ALTER TABLE version_downloads ALTER date SET DEFAULT DATE(NOW());
+            "));
+            Ok(())
+        }, |tx| {
+            try!(tx.batch_execute("
+                ALTER TABLE version_downloads ALTER counted DROP DEFAULT;
+                ALTER TABLE version_downloads ALTER processed DROP DEFAULT;
+                ALTER TABLE version_downloads ALTER date DROP DEFAULT;
+            "));
+            Ok(())
+        }),
     ];
     // NOTE: Generate a new id via `date +"%Y%m%d%H%M%S"`
 

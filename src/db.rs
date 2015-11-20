@@ -128,9 +128,12 @@ impl AroundMiddleware for NewTransactionMiddleware {
 
 impl Handler for NewTransactionMiddleware {
     fn call(&self, req: &mut Request) -> Result<Response, Box<Error+Send>> {
-        let connection = Rc::new(try!(req.app().new_connection()));
-        connection.transaction(|| {
+        if !req.extensions().contains::<Rc<Connection>>() {
+            let connection = Rc::new(try!(req.app().new_connection()));
             req.mut_extensions().insert(connection.clone());
+        }
+        let connection = req.new_conn().clone();
+        connection.transaction(|| {
             self.handler.as_ref().unwrap().call(req)
         })
         .map_err(|e| match e {
@@ -146,7 +149,7 @@ pub trait RequestTransaction {
     /// The connection will live for the lifetime of the request.
     fn db_conn(&self) -> CargoResult<&pg::Connection>;
 
-    fn new_conn(&self) -> &Connection;
+    fn new_conn(&self) -> &Rc<Connection>;
 
     /// Return the lazily initialized postgres transaction for this request.
     ///
@@ -167,10 +170,9 @@ impl<'a> RequestTransaction for Request + 'a {
             .conn()
     }
 
-    fn new_conn(&self) -> &Connection {
+    fn new_conn(&self) -> &Rc<Connection> {
         self.extensions().find::<Rc<Connection>>()
             .expect("Connection not present in request")
-            .as_ref()
     }
 
     fn tx(&self) -> CargoResult<&GenericConnection> {

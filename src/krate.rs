@@ -160,12 +160,14 @@ select_column_workaround!(versions -> crates (id, crate_id, num, updated_at, cre
 
 struct NewVersionDownload {
     version_id: i32,
+    downloads: i32,
 }
 
 impl NewVersionDownload {
-    fn new(version_id: i32) -> Self {
+    fn new(version_id: i32, downloads: i32,) -> Self {
         NewVersionDownload {
             version_id: version_id,
+            downloads: downloads,
         }
     }
 }
@@ -173,8 +175,10 @@ impl NewVersionDownload {
 insertable! {
     NewVersionDownload => version_downloads {
         version_id -> i32,
+        downloads -> i32,
     }
 }
+
 impl Queriable<crates::SqlType> for Crate {
     type Row = (i32, String, i32, PgTimestamp, PgTimestamp, i32, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
@@ -1096,7 +1100,7 @@ pub fn download(req: &mut Request) -> CargoResult<Response> {
     let updated_rows = try!(conn.execute_returning_count(&command));
 
     if updated_rows == 0 {
-        let new_download = NewVersionDownload::new(version_id);
+        let new_download = NewVersionDownload::new(version_id, 1);
         try!(conn.insert_returning_count(&version_downloads::table, &new_download));
     }
 
