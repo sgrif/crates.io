@@ -482,6 +482,60 @@ fn migrations() -> Vec<Migration> {
                              UNIQUE (owner_id, crate_id)", &[]));
             Ok(())
         }),
+        Migration::run(20151120121106,
+            "ALTER TABLE crates ALTER updated_at SET DEFAULT NOW()",
+            "ALTER TABLE crates ALTER updated_at DROP DEFAULT",
+        ),
+        Migration::run(20151120121502,
+            "ALTER TABLE crates ALTER created_at SET DEFAULT NOW()",
+            "ALTER TABLE crates ALTER created_at DROP DEFAULT",
+        ),
+        Migration::new(20151120121734, |tx| {
+            try!(tx.execute("ALTER TABLE crates ALTER downloads SET DEFAULT 0", &[]));
+            try!(tx.execute("ALTER TABLE crates ALTER max_version SET DEFAULT '0.0.0'", &[]));
+            Ok(())
+        }, |tx| {
+            try!(tx.execute("ALTER TABLE crates ALTER downloads DROP DEFAULT", &[]));
+            try!(tx.execute("ALTER TABLE crates ALTER max_version DROP DEFAULT", &[]));
+            Ok(())
+        }),
+        Migration::new(20151120160247, |tx| {
+            try!(tx.batch_execute("
+            CREATE FUNCTION set_updated_at() RETURNS trigger AS $$
+            begin
+                new.updated_at := NOW();
+                return new;
+            end
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER trigger_crates_set_updated_at BEFORE UPDATE
+            ON crates
+            FOR EACH ROW
+            WHEN (NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at)
+            EXECUTE PROCEDURE set_updated_at();
+            "));
+            Ok(())
+        }, |tx| {
+            try!(tx.execute("DROP TRIGGER trigger_crates_set_updated_at
+                                       ON crates", &[]));
+            try!(tx.execute("DROP FUNCTION set_updated_at()", &[]));
+            Ok(())
+        }),
+        Migration::new(20151120161613, |tx| {
+            try!(tx.batch_execute("
+                ALTER TABLE versions ALTER downloads SET DEFAULT 0;
+                ALTER TABLE versions ALTER created_at SET DEFAULT NOW();
+                ALTER TABLE versions ALTER updated_at SET DEFAULT NOW();
+            "));
+            Ok(())
+        }, |tx| {
+            try!(tx.batch_execute("
+                ALTER TABLE versions ALTER downloads DROP DEFAULT;
+                ALTER TABLE versions ALTER created_at DROP DEFAULT;
+                ALTER TABLE versions ALTER updated_at DROP DEFAULT;
+            "));
+            Ok(())
+        }),
     ];
     // NOTE: Generate a new id via `date +"%Y%m%d%H%M%S"`
 

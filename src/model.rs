@@ -22,7 +22,7 @@ pub trait Model: Sized {
 use yaqb::query_builder::*;
 
 type SqlTypeOfTable<T> = <<<T as UpdateTarget>::Table as Table>
-                             ::Star as Expression>::SqlType;
+                             ::AllColumns as Expression>::SqlType;
 
 pub fn update_or_insert<T, U, V>(conn: &Connection, target: T, new_record: U)
     -> ::yaqb::result::Result<UpdateOrInsert<V>> where
@@ -58,5 +58,23 @@ impl<T> UpdateOrInsert<T> {
             UpdateOrInsert::Inserted(r) => r,
         }
     }
+}
+
+const USEC_PER_SEC: i64 = 1_000_000;
+const NSEC_PER_USEC: i64 = 1_000;
+
+// Number of seconds from 1970-01-01 to 2000-01-01
+const TIME_SEC_CONVERSION: i64 = 946684800;
+
+pub fn parse_time(t: i64) -> ::time::Timespec {
+    let mut sec = t / USEC_PER_SEC + TIME_SEC_CONVERSION;
+    let mut usec = t % USEC_PER_SEC;
+
+    if usec < 0 {
+        sec -= 1;
+        usec = USEC_PER_SEC + usec;
+    }
+
+    ::time::Timespec::new(sec, (usec * NSEC_PER_USEC) as i32)
 }
 

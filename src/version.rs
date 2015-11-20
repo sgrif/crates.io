@@ -10,19 +10,22 @@ use semver;
 use time::Duration;
 use time::Timespec;
 use url;
+use yaqb::*;
+use yaqb::types::structs::PgTimestamp;
 
-use {Model, Crate, User};
 use app::RequestApp;
 use db::RequestTransaction;
 use dependency::{Dependency, EncodableDependency, Kind};
 use download::{VersionDownload, EncodableVersionDownload};
 use git;
+use model::parse_time;
+use owner::{rights, Rights};
 use upload;
 use user::RequestUser;
-use owner::{rights, Rights};
 use util::{RequestUtils, CargoResult, ChainError, internal, human};
+use {Model, Crate, User};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Version {
     pub id: i32,
     pub crate_id: i32,
@@ -34,16 +37,56 @@ pub struct Version {
     pub yanked: bool,
 }
 
+#[derive(Debug, Clone)]
+struct NewVersion {
+    crate_id: i32,
+    num: String,
+    features: String,
+}
+
 table! {
     versions {
         id -> Serial,
         crate_id -> Integer,
         num -> VarChar,
-        updated_at -> BigInt,
-        created_at -> BigInt,
+        updated_at -> Timestamp,
+        created_at -> Timestamp,
         downloads -> Integer,
-        features -> VarChar,
+        features -> Nullable<VarChar>,
         yanked -> Bool,
+    }
+}
+
+insertable! {
+    NewVersion => versions {
+        crate_id -> i32,
+        num -> String,
+        features -> String,
+    }
+}
+
+impl Queriable<versions::SqlType> for Version {
+    type Row = (i32, i32, String, PgTimestamp, PgTimestamp, i32, Option<String>, bool);
+
+    fn build(row: Self::Row) -> Self {
+        let (id, crate_id, num, updated_at, created_at, downloads, features, yanked) = row;
+        let updated_at = parse_time(updated_at.0);
+        let created_at = parse_time(created_at.0);
+        let features = features.map(|s| {
+            json::decode(&s).unwrap()
+        }).unwrap_or_else(|| HashMap::new());
+        let num = semver::Version::parse(&num).unwrap();
+
+        Version {
+            id: id,
+            crate_id: crate_id,
+            num: num,
+            updated_at: updated_at,
+            created_at: created_at,
+            downloads: downloads,
+            features: features,
+            yanked: yanked,
+        }
     }
 }
 
@@ -74,6 +117,17 @@ pub struct VersionLinks {
 }
 
 impl Version {
+    pub fn new_find_by_num(
+        conn: &Connection,
+        crate_id: i32,
+        num: &semver::Version,
+    ) -> CargoResult<Option<Version>> {
+        versions::table.filter(versions::crate_id.eq(crate_id))
+            .filter(versions::num.eq(num.to_string()))
+            .first(conn)
+            .map_err(|e| e.into())
+    }
+
     pub fn find_by_num(conn: &GenericConnection,
                        crate_id: i32,
                        num: &semver::Version)
@@ -83,6 +137,23 @@ impl Version {
                                       WHERE crate_id = $1 AND num = $2"));
         let mut rows = try!(stmt.query(&[&crate_id, &num])).into_iter();
         Ok(rows.next().map(|r| Model::from_row(&r)))
+    }
+
+    pub fn new_insert(
+        conn: &Connection,
+        crate_id: i32,
+        num: &semver::Version,
+        features: &HashMap<String, Vec<String>>,
+        authors: &[String]
+    ) -> CargoResult<Version> {
+        let new_version = NewVersion {
+            crate_id: crate_id,
+            num: num.to_string(),
+            features: json::encode(features).unwrap(),
+        };
+        let mut inserted = try!(conn.insert(&versions::table, &new_version));
+        Ok(inserted.nth(0).unwrap())
+        // FIXME: add authors
     }
 
     pub fn insert(conn: &GenericConnection,

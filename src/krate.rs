@@ -30,7 +30,7 @@ use dependency::{Dependency, EncodableDependency};
 use download::{VersionDownload, EncodableVersionDownload};
 use git;
 use keyword::EncodableKeyword;
-use model::{update_or_insert, UpdateOrInsert};
+use model::{update_or_insert, UpdateOrInsert, parse_time};
 use upload;
 use user::RequestUser;
 use owner::{EncodableOwner, Owner, Rights, OwnerKind, Team, rights};
@@ -175,25 +175,6 @@ insertable! {
         version_id -> i32,
     }
 }
-
-const USEC_PER_SEC: i64 = 1_000_000;
-const NSEC_PER_USEC: i64 = 1_000;
-
-// Number of seconds from 1970-01-01 to 2000-01-01
-const TIME_SEC_CONVERSION: i64 = 946684800;
-
-fn parse_time(t: i64) -> Timespec {
-    let mut sec = t / USEC_PER_SEC + TIME_SEC_CONVERSION;
-    let mut usec = t % USEC_PER_SEC;
-
-    if usec < 0 {
-        sec -= 1;
-        usec = USEC_PER_SEC + usec;
-    }
-
-    Timespec::new(sec, (usec * NSEC_PER_USEC) as i32)
-}
-
 impl Queriable<crates::SqlType> for Crate {
     type Row = (i32, String, i32, PgTimestamp, PgTimestamp, i32, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
 
@@ -588,6 +569,35 @@ impl Crate {
 
     pub fn s3_path(&self, version: &str) -> String {
         format!("/crates/{}/{}-{}.crate", self.name, self.name, version)
+    }
+
+    pub fn new_add_version(
+        &mut self,
+        conn: &Connection,
+        version: &semver::Version,
+        features: &HashMap<String, Vec<String>>,
+        authors: &[String],
+    ) -> CargoResult<Version> {
+        use self::crates::dsl::*;
+
+        conn.transaction(|| {
+            if try!(Version::new_find_by_num(conn, self.id, version)).is_some() {
+                return Err(human(format!("crate version `{}` is already uploaded", version)));
+            }
+
+            let zero = semver::Version::parse("0.0.0").unwrap();
+            if *version > self.max_version || self.max_version == zero {
+                self.max_version = version.clone();
+            }
+            let command = update(crates.filter(id.eq(self.id)))
+                .set(max_version.eq(self.max_version.to_string()));
+            *self = try!(conn.query_one(command)).unwrap();
+
+            Version::new_insert(conn, self.id, version, features, authors)
+        }).map_err(|e| match e {
+            TransactionError::CouldntCreateTransaction(e) => e.into(),
+            TransactionError::UserReturnedError(e) => e,
+        })
     }
 
     pub fn add_version(&mut self,

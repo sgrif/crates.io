@@ -482,7 +482,10 @@ fn download() {
     let mut req = ::req(app, Method::Get, "/api/v1/crates/foo/1.0.0/download");
     ::new_mock_user(&mut req, ::user("foo"));
     ::new_mock_crate(&mut req, ::krate("foo"));
-    let resp = t_resp!(middle.call(&mut req));
+    let mut resp = t_resp!(middle.call(&mut req));
+    let mut s = String::new();
+    resp.body.read_to_string(&mut s).unwrap();
+    println!("{}", s);
     assert_eq!(resp.status.0, 302);
 
     req.with_path("/api/v1/crates/foo/1.0.0/downloads");
