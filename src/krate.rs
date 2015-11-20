@@ -57,7 +57,7 @@ pub struct Crate {
     pub repository: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NewCrate<'a> {
     name: &'a str,
     user_id: i32,
@@ -65,7 +65,7 @@ pub struct NewCrate<'a> {
     homepage: Option<&'a str>,
     documentation: Option<&'a str>,
     readme: Option<&'a str>,
-    keywords: Option<&'a str>,
+    keywords: String,
     repository: Option<&'a str>,
     license: Option<&'a str>,
 }
@@ -78,10 +78,9 @@ impl<'a> NewCrate<'a> {
         homepage: Option<&'a str>,
         documentation: Option<&'a str>,
         readme: Option<&'a str>,
-        keywords: Option<&'a str>,
+        keywords: String,
         repository: Option<&'a str>,
         license: Option<&'a str>,
-        license_file: Option<&'a str>,
     ) -> CargoResult<Self> {
         Ok(NewCrate {
             name: name,
@@ -124,7 +123,21 @@ insertable! {
         homepage -> Option<&'a str>,
         documentation -> Option<&'a str>,
         readme -> Option<&'a str>,
-        keywords -> Option<&'a str>,
+        keywords -> String,
+        repository -> Option<&'a str>,
+        license -> Option<&'a str>,
+    }
+}
+
+changeset! {
+    NewCrate<'a> => crates {
+        name -> &'a str,
+        user_id -> i32,
+        description -> Option<&'a str>,
+        homepage -> Option<&'a str>,
+        documentation -> Option<&'a str>,
+        readme -> Option<&'a str>,
+        keywords -> String,
         repository -> Option<&'a str>,
         license -> Option<&'a str>,
     }
@@ -144,37 +157,6 @@ table! {
 joinable!(crates -> versions (id = crate_id));
 select_column_workaround!(crates -> versions (id, name, user_id, updated_at, created_at, downloads, max_version, description, homepage, documentation, readme, keywords, license, repository));
 select_column_workaround!(versions -> crates (id, crate_id, num, updated_at, created_at, downloads, features, yanked));
-
-use yaqb::expression::predicates::Eq;
-use yaqb::expression::bound::Bound;
-
-impl<'a> ::yaqb::query_builder::AsChangeset for NewCrate<'a> {
-    type Changeset = (
-        Eq<crates::name, Bound<types::VarChar, &'a str>>,
-        Eq<crates::user_id, Bound<types::Integer, i32>>,
-        Eq<crates::description, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::homepage, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::documentation, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::readme, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::keywords, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::repository, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<crates::license, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-    );
-
-    fn as_changeset(self) -> Self::Changeset {
-        (
-            crates::name.eq(self.name),
-            crates::user_id.eq(self.user_id),
-            crates::description.eq(self.description),
-            crates::homepage.eq(self.homepage),
-            crates::documentation.eq(self.documentation),
-            crates::readme.eq(self.readme),
-            crates::keywords.eq(self.keywords),
-            crates::repository.eq(self.repository),
-            crates::license.eq(self.license),
-        )
-    }
-}
 
 struct NewVersionDownload {
     version_id: i32,
@@ -276,6 +258,20 @@ pub struct CrateLinks {
 }
 
 impl Crate {
+    pub fn as_new_crate(&self, user_id: i32) -> CargoResult<NewCrate> {
+        NewCrate::new(
+            &self.name,
+            user_id,
+            self.description.as_ref().map(|s| &s[..]),
+            self.homepage.as_ref().map(|s| &s[..]),
+            self.documentation.as_ref().map(|s| &s[..]),
+            self.readme.as_ref().map(|s| &s[..]),
+            self.keywords.join(","),
+            self.repository.as_ref().map(|s| &s[..]),
+            self.license.as_ref().map(|s| &s[..]),
+        )
+    }
+
     pub fn find_by_name(conn: &GenericConnection,
                         name: &str) -> CargoResult<Crate> {
         let stmt = try!(conn.prepare("SELECT * FROM crates \
@@ -286,14 +282,14 @@ impl Crate {
         Ok(Model::from_row(&row))
     }
 
-    pub fn new_find_or_insert(conn: &Connection, new_crate: NewCrate, user_id: i32)
+    pub fn new_find_or_insert(conn: &Connection, new_crate: NewCrate)
         -> CargoResult<Crate>
     {
         // TODO: like with users, this is sadly racy
         let target = crates::table.filter(canon_crate_name(crates::name)
                                           .eq(canon_crate_name(&new_crate.name)));
         conn.transaction(|| {
-            match try!(update_or_insert(conn, target, &[new_crate])) {
+            match try!(update_or_insert(conn, target, &new_crate)) {
                 UpdateOrInsert::Updated(krate) => Ok(krate),
                 UpdateOrInsert::Inserted(krate) => {
                     // Blacklist the current set of crates in the rust distribution
@@ -303,7 +299,7 @@ impl Crate {
                     if RESERVED.lines().any(|line| krate.name == line) {
                         Err(human("cannot upload a crate with a reserved name"))
                     } else {
-                        try!(krate.add_owner(conn, user_id));
+                        try!(krate.add_owner(conn, new_crate.user_id));
                         Ok(krate)
                     }
                 }
@@ -1091,7 +1087,7 @@ pub fn download(req: &mut Request) -> CargoResult<Response> {
 
     if updated_rows == 0 {
         let new_download = NewVersionDownload::new(version_id);
-        try!(conn.insert_returning_count(&version_downloads::table, &[new_download]));
+        try!(conn.insert_returning_count(&version_downloads::table, &new_download));
     }
 
     // Now that we've done our business, redirect to the actual data.

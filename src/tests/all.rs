@@ -241,7 +241,7 @@ fn mock_user(req: &mut Request, u: User) -> User {
     return u;
 }
 
-fn new_mock_crate(req: &mut Request, krate: Crate) -> (Crate, Version) {
+fn new_mock_crate(req: &mut Request, krate: Crate) -> Crate {
     new_mock_crate_vers(req, krate, &semver::Version::parse("1.0.0").unwrap())
 }
 
@@ -249,23 +249,15 @@ fn mock_crate(req: &mut Request, krate: Crate) -> (Crate, Version) {
     mock_crate_vers(req, krate, &semver::Version::parse("1.0.0").unwrap())
 }
 
-// fn new_mock_crate_vers(req: &mut Request, krate: Crate, v: &semver::Version)
-//                    -> (Crate, Version) {
-//     let user = req.extensions().find::<User>().unwrap();
-//     let mut krate = Crate::new_find_or_insert(req.new_conn(), &krate.name,
-//                                       user.id, &krate.description,
-//                                       &krate.homepage,
-//                                       &krate.documentation,
-//                                       &krate.readme,
-//                                       &krate.keywords,
-//                                       &krate.repository,
-//                                       &krate.license,
-//                                       &None).unwrap();
-//     Keyword::new_update_crate(req.new_conn(), &krate,
-//                           &krate.keywords).unwrap();
-//     let v = krate.new_add_version(req.new_conn(), v, &HashMap::new(), &[]);
-//     (krate, v.unwrap())
-// }
+fn new_mock_crate_vers(req: &mut Request, krate: Crate, _v: &semver::Version)
+                   -> Crate {
+    let user = req.extensions().find::<User>().unwrap();
+    Crate::new_find_or_insert(req.new_conn(), krate.as_new_crate(user.id).unwrap()).unwrap()
+    // Keyword::new_update_crate(req.new_conn(), &krate,
+    //                       &krate.keywords).unwrap();
+    // let v = krate.new_add_version(req.new_conn(), v, &HashMap::new(), &[]);
+    // (krate, v.unwrap())
+}
 
 fn mock_crate_vers(req: &mut Request, krate: Crate, v: &semver::Version)
                    -> (Crate, Version) {

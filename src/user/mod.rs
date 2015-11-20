@@ -63,31 +63,6 @@ impl<'a> NewUser<'a> {
     }
 }
 
-use yaqb::expression::predicates::Eq;
-use yaqb::expression::bound::Bound;
-
-impl<'a> ::yaqb::query_builder::AsChangeset for NewUser<'a> {
-    type Changeset = (
-        Eq<users::gh_login, Bound<types::VarChar, &'a str>>,
-        Eq<users::name, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<users::email, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<users::gh_avatar, Bound<types::Nullable<types::VarChar>, Option<&'a str>>>,
-        Eq<users::gh_access_token, Bound<types::VarChar, &'a str>>,
-        Eq<users::api_token, Bound<types::VarChar, &'a str>>,
-    );
-
-    fn as_changeset(self) -> Self::Changeset {
-        (
-            users::gh_login.eq(self.gh_login),
-            users::name.eq(self.name),
-            users::email.eq(self.email),
-            users::gh_avatar.eq(self.gh_avatar),
-            users::gh_access_token.eq(self.gh_access_token),
-            users::api_token.eq(self.api_token),
-        )
-    }
-}
-
 table! {
     users {
         id -> Serial,
@@ -101,6 +76,17 @@ table! {
 }
 
 insertable! {
+    NewUser<'a> => users {
+        gh_login -> &'a str,
+        name -> Option<&'a str>,
+        email -> Option<&'a str>,
+        gh_avatar -> Option<&'a str>,
+        gh_access_token -> &'a str,
+        api_token -> &'a str,
+    }
+}
+
+changeset! {
     NewUser<'a> => users {
         gh_login -> &'a str,
         name -> Option<&'a str>,
@@ -163,7 +149,7 @@ impl User {
         //       more errors than it needs to.
 
         let target = users::table.filter(gh_login.eq(new_user.gh_login));
-        match update_or_insert(conn, target, &[new_user]) {
+        match update_or_insert(conn, target, &new_user) {
             Ok(res) => Ok(res.record()),
             Err(e) => Err(e.into()),
         }

@@ -19,21 +19,22 @@ pub trait Model: Sized {
     }
 }
 
-type SqlTypeOfTable<T> = <<<T as ::yaqb::query_builder::UpdateTarget>::Table as Table>
+use yaqb::query_builder::*;
+
+type SqlTypeOfTable<T> = <<<T as UpdateTarget>::Table as Table>
                              ::Star as Expression>::SqlType;
 
-pub fn update_or_insert<'a, T: 'a, U, V>(conn: &Connection, target: T, new_record: &'a [U;1])
+pub fn update_or_insert<T, U, V>(conn: &Connection, target: T, new_record: U)
     -> ::yaqb::result::Result<UpdateOrInsert<V>> where
-        T: ::yaqb::query_builder::UpdateTarget + Copy,
-        U: ::yaqb::query_builder::AsChangeset + ::yaqb::persistable::Insertable<'a, T::Table>
-            + Copy,
+        T: UpdateTarget + Copy,
+        U: ::yaqb::persistable::Insertable<T::Table> + AsChangeset + Copy,
         V: Queriable<SqlTypeOfTable<T>>,
-        U::Changeset: ::yaqb::query_builder::Changeset<Target=T::Table>,
+        U::Changeset: Changeset<Target=T::Table>,
 {
     use yaqb::query_builder::update;
 
     conn.transaction(|| {
-        let command = update(target).set(new_record[0]);
+        let command = update(target).set(new_record);
         match try!(conn.query_one(command)) {
             Some(record) => return Ok(UpdateOrInsert::Updated(record)),
             None => {
