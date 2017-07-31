@@ -1,3 +1,5 @@
+extern crate reqwest;
+
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::env;
@@ -16,6 +18,7 @@ use bufstream::BufStream;
 use cargo_registry::user::NewUser;
 use curl::easy::{Easy, List, ReadError};
 use serde_json;
+use self::reqwest::header::UserAgent;
 
 // A "bomb" so when the test task exists we know when to shut down
 // the server and fail if the subtask failed.
@@ -320,49 +323,33 @@ impl GhUser {
             client_id: String,
             client_secret: String,
         }
-        let mut handle = Easy::new();
-        let url = format!(
-            "https://{}:{}@api.github.com/authorizations",
-            self.login,
-            password
-        );
-        let body = serde_json::to_string(&Authorization {
+        let auth = Authorization {
             scopes: vec!["read:org".to_string()],
             note: "crates.io test".to_string(),
             client_id: ::env("GH_CLIENT_ID"),
             client_secret: ::env("GH_CLIENT_SECRET"),
-        }).unwrap();
+        };
+        let client = t!(reqwest::Client::new());
+        let mut response = client.post("https://api.github.com/authorizations")
+            .unwrap()
+            .json(&auth)
+            .unwrap()
+            .basic_auth(self.login, Some(password))
+            .header(UserAgent::new("hello!"))
+            .send()
+            .unwrap();
 
-        t!(handle.url(&url));
-        t!(handle.post(true));
-
-        let mut headers = List::new();
-        headers.append("User-Agent: hello!").unwrap();
-        t!(handle.http_headers(headers));
-
-        let mut body = body.as_bytes();
-        let mut response = Vec::new();
-        {
-            let mut transfer = handle.transfer();
-            t!(transfer.read_function(
-                |buf| body.read(buf).map_err(|_| ReadError::Abort),
-            ));
-            t!(transfer.write_function(|data| {
-                response.extend(data);
-                Ok(data.len())
-            }));
-            t!(transfer.perform())
-        }
-
-        if t!(handle.response_code()) < 200 || t!(handle.response_code()) >= 300 {
-            panic!("failed to get a 200 {}", String::from_utf8_lossy(&response));
+        if !response.status().is_success() {
+            let mut body = String::new();
+            t!(response.read_to_string(&mut body));
+            panic!("failed to get a 200 {}", body);
         }
 
         #[derive(Deserialize)]
         struct Response {
             token: String,
         }
-        let resp: Response = serde_json::from_str(str::from_utf8(&response).unwrap()).unwrap();
+        let resp: Response = t!(serde_json::from_reader(&mut response));
         File::create(&self.filename())
             .unwrap()
             .write_all(&resp.token.as_bytes())

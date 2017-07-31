@@ -183,3 +183,5 @@ table! {
         license -> Nullable<Varchar>,
     }
 }
+
+enable_multi_table_joins!(users, teams);

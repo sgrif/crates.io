@@ -1,5 +1,6 @@
+use diesel::pg::{Pg, PgConnection};
 use diesel::prelude::*;
-use diesel::pg::PgConnection;
+use diesel::types::Nullable;
 use pg::rows::Row;
 
 use app::App;
@@ -425,4 +426,25 @@ pub fn rights(app: &App, owners: &[Owner], user: &User) -> CargoResult<Rights> {
         }
     }
     Ok(best)
+}
+
+#[allow(dead_code)] // rustc bug seems to think this type is never used
+type JoinedOwnerRow = (
+    Nullable<users::SqlType>,
+    Nullable<teams::SqlType>,
+);
+
+impl Queryable<JoinedOwnerRow, Pg> for Owner {
+    type Row = (
+        Option<<User as Queryable<users::SqlType, Pg>>::Row>,
+        Option<<Team as Queryable<teams::SqlType, Pg>>::Row>,
+    );
+
+    fn build(row: Self::Row) -> Self {
+        match row {
+            (Some(user_row), _) => Owner::User(Queryable::<users::SqlType, Pg>::build(user_row)),
+            (_, Some(team_row)) => Owner::Team(Queryable::<teams::SqlType, Pg>::build(team_row)),
+            (None, None) => unreachable!("owner with no associated row"),
+        }
+    }
 }

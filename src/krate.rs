@@ -625,24 +625,19 @@ impl Crate {
         Ok(ret)
     }
 
-    pub fn owners(&self, conn: &PgConnection) -> CargoResult<Vec<Owner>> {
-        let base_query = CrateOwner::belonging_to(self).filter(crate_owners::deleted.eq(false));
-        let users = base_query
-            .inner_join(users::table)
-            .select(users::all_columns)
-            .filter(crate_owners::owner_kind.eq(OwnerKind::User as i32))
-            .load(conn)?
-            .into_iter()
-            .map(Owner::User);
-        let teams = base_query
-            .inner_join(teams::table)
-            .select(teams::all_columns)
-            .filter(crate_owners::owner_kind.eq(OwnerKind::Team as i32))
-            .load(conn)?
-            .into_iter()
-            .map(Owner::Team);
-
-        Ok(users.chain(teams).collect())
+    pub fn owners(&self, conn: &PgConnection) -> QueryResult<Vec<Owner>> {
+        CrateOwner::belonging_to(self)
+            .filter(crate_owners::deleted.eq(false))
+            .left_join(users::table.on(
+                users::id.eq(crate_owners::owner_id)
+                    .and(crate_owners::owner_kind.eq(OwnerKind::User as i32))
+            ))
+            .left_join(teams::table.on(
+                teams::id.eq(crate_owners::owner_id)
+                    .and(crate_owners::owner_kind.eq(OwnerKind::Team as i32))
+            ))
+            .select((users::all_columns.nullable(), teams::all_columns.nullable()))
+            .load(conn)
     }
 
     // TODO: Update bin/transfer_crates to use owners() then get rid of this
