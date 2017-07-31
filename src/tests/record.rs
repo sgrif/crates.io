@@ -16,9 +16,8 @@ use std::thread;
 
 use bufstream::BufStream;
 use cargo_registry::user::NewUser;
-use curl::easy::{Easy, List, ReadError};
 use serde_json;
-use self::reqwest::header::UserAgent;
+use self::reqwest::header::{Headers, UserAgent};
 
 // A "bomb" so when the test task exists we know when to shut down
 // the server and fail if the subtask failed.
@@ -136,10 +135,10 @@ pub fn proxy() -> (String, Bomb) {
 fn record_http(mut socket: TcpStream, data: &mut BufStream<File>) {
     let mut request = Vec::new();
     t!(socket.read_to_end(&mut request));
-    let (handle, headers, body) = send(&request[..]);
+    let resp = send(&request[..]);
 
     let mut response = Vec::new();
-    respond(handle, headers, body, &mut response);
+    respond(resp, &mut response);
     t!(socket.write_all(&response));
 
     t!(write!(
@@ -151,72 +150,56 @@ fn record_http(mut socket: TcpStream, data: &mut BufStream<File>) {
         str::from_utf8(&response).unwrap()
     ));
 
-    fn send<R: Read>(rdr: R) -> (Easy, Vec<Vec<u8>>, Vec<u8>) {
+    fn send<R: Read>(rdr: R) -> reqwest::Response {
         let mut socket = BufReader::new(rdr);
-        let method;
-        let url;
-        let mut headers = List::new();
-        {
-            let mut lines = (&mut socket).lines();
-            let line = t!(lines.next().unwrap());
-            let mut parts = line.split(' ');
-            method = parts.next().unwrap().to_string();
-            url = parts.next().unwrap().replace("http://", "https://");
 
-            for line in lines {
-                let line = t!(line);
-                if line.len() < 3 {
-                    break;
-                }
-                t!(headers.append(&line));
+        let mut first_line = String::new();
+        t!(socket.read_line(&mut first_line));
+        let method = first_line.split(' ').nth(0).unwrap().to_string();
+        let url = first_line.trim().split(' ').nth(1).unwrap()
+            .replace("http://", "https://");
+
+        let mut headers = Headers::new();
+        {
+            let header_lines = socket.by_ref()
+                .lines()
+                .map(Result::unwrap)
+                .take_while(|l| !l.is_empty());
+            for line in header_lines {
+                let mut parts = line.split(": ").map(|s| s.to_string());
+                headers.set_raw(parts.next().unwrap(), parts.next().unwrap());
             }
         }
 
-        let mut handle = Easy::new();
-        t!(handle.url(&url));
-        match &method[..] {
-            "PUT" => t!(handle.put(true)),
-            "POST" => t!(handle.post(true)),
-            "GET" => t!(handle.get(true)),
-            method => t!(handle.custom_request(method)),
-        }
-        t!(handle.http_headers(headers));
-
-        let mut headers = Vec::new();
-        let mut response = Vec::new();
-        {
-            let mut transfer = handle.transfer();
-            t!(transfer.header_function(|header| {
-                headers.push(header.to_owned());
-                true
-            }));
-            t!(transfer.write_function(|data| {
-                response.extend(data);
-                Ok(data.len())
-            }));
-            t!(transfer.read_function(
-                |buf| socket.read(buf).map_err(|_| ReadError::Abort),
-            ));
-
-            t!(transfer.perform());
-        }
-
-        (handle, headers, response)
+        let mut body = Vec::new();
+        t!(socket.read_to_end(&mut body));
+        let client = t!(reqwest::Client::new());
+        client.request(reqwest::Method::Extension(method), &url)
+            .unwrap()
+            .headers(headers)
+            .body(reqwest::Body::from(body))
+            .send()
+            .unwrap()
     }
 
-    fn respond<W: Write>(mut handle: Easy, headers: Vec<Vec<u8>>, body: Vec<u8>, mut socket: W) {
+    fn respond<W: Write>(mut resp: reqwest::Response, mut socket: W) {
         t!(socket.write_all(
-            format!("HTTP/1.1 {}\r\n", t!(handle.response_code())).as_bytes(),
+            format!("HTTP/1.1 {}\r\n", resp.status()).as_bytes(),
         ));
-        for header in headers {
-            if header.starts_with(b"Transfer-Encoding: ") {
+        for header in resp.headers().iter() {
+            let name = header.name();
+            if name == "Transfer-Encoding" {
                 continue;
             }
-            t!(socket.write_all(&header));
-            t!(socket.write_all(b"\r\n"));
+
+            for line in header.raw() {
+                t!(socket.write_all(name.as_bytes()));
+                t!(socket.write_all(line));
+                t!(socket.write_all(b"\r\n"));
+            }
         }
         t!(socket.write_all(b"\r\n"));
-        t!(socket.write_all(&body));
+        t!(io::copy(&mut resp, &mut socket));
     }
 }
 
