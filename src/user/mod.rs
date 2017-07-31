@@ -309,8 +309,8 @@ pub fn github_access_token(req: &mut Request) -> CargoResult<Response> {
         |s| human(&s),
     )?;
 
-    let (handle, resp) = http::github(req.app(), "/user", &token)?;
-    let ghuser: GithubUser = http::parse_github_response(handle, &resp)?;
+    let resp = http::github(req.app(), "/user", &token)?;
+    let ghuser: GithubUser = http::parse_github_response(resp)?;
 
     let user = NewUser::new(
         ghuser.id,

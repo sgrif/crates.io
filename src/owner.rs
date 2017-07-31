@@ -191,8 +191,8 @@ impl Team {
         // links. A hundred teams should be enough for any org, right?
         let url = format!("/orgs/{}/teams?per_page=100", org_name);
         let token = http::token(req_user.gh_access_token.clone());
-        let (handle, data) = http::github(app, &url, &token)?;
-        let teams: Vec<GithubTeam> = http::parse_github_response(handle, &data)?;
+        let resp = http::github(app, &url, &token)?;
+        let teams: Vec<GithubTeam> = http::parse_github_response(resp)?;
 
         let team = teams
             .into_iter()
@@ -215,8 +215,8 @@ impl Team {
         }
 
         let url = format!("/orgs/{}", org_name);
-        let (handle, resp) = http::github(app, &url, &token)?;
-        let org: Org = http::parse_github_response(handle, &resp)?;
+        let resp = http::github(app, &url, &token)?;
+        let org: Org = http::parse_github_response(resp)?;
 
         NewTeam::new(login, team.id, team.name, org.avatar_url).create_or_update(conn)
     }
@@ -275,6 +275,7 @@ impl Team {
 fn team_with_gh_id_contains_user(app: &App, github_id: i32, user: &User) -> CargoResult<bool> {
     // GET teams/:team_id/memberships/:user_name
     // check that "state": "active"
+    use reqwest::StatusCode::NotFound;
 
     #[derive(Deserialize)]
     struct Membership {
@@ -283,14 +284,14 @@ fn team_with_gh_id_contains_user(app: &App, github_id: i32, user: &User) -> Carg
 
     let url = format!("/teams/{}/memberships/{}", &github_id, &user.gh_login);
     let token = http::token(user.gh_access_token.clone());
-    let (mut handle, resp) = http::github(app, &url, &token)?;
+    let resp = http::github(app, &url, &token)?;
 
     // Officially how `false` is returned
-    if handle.response_code().unwrap() == 404 {
+    if let NotFound = resp.status() {
         return Ok(false);
     }
 
-    let membership: Membership = http::parse_github_response(handle, &resp)?;
+    let membership: Membership = http::parse_github_response(resp)?;
 
     // There is also `state: pending` for which we could possibly give
     // some feedback, but it's not obvious how that should work.

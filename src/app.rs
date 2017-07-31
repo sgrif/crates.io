@@ -8,6 +8,7 @@ use conduit_middleware::Middleware;
 use git2;
 use oauth2;
 use r2d2;
+use reqwest;
 use curl::easy::Easy;
 
 use {db, Config};
@@ -95,6 +96,14 @@ impl App {
             handle.proxy(proxy).unwrap();
         }
         handle
+    }
+
+    pub fn reqwest_client(&self) -> reqwest::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()?;
+        if let Some(proxy) = self.config.uploader.proxy() {
+            builder.proxy(reqwest::Proxy::all(proxy)?);
+        }
+        builder.build()
     }
 }
 

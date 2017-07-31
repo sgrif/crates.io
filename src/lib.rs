@@ -32,6 +32,7 @@ extern crate r2d2;
 extern crate r2d2_diesel;
 extern crate r2d2_postgres;
 extern crate rand;
+extern crate reqwest;
 extern crate s3;
 extern crate semver;
 extern crate serde;
