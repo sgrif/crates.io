@@ -547,6 +547,43 @@ impl Crate {
     }
 }
 
+use diesel::expression::helper_types::{And, Gt, Eq};
+use diesel::expression::dsl::{date, now, sum};
+use diesel::data_types::PgInterval;
+use diesel::query_source::joins::{JoinOn, Join, LeftOuter};
+use diesel::query_builder::BoxedSelectStatement;
+
+type Sub<Lhs, Rhs> = <Lhs as ::std::ops::Sub<Rhs>>::Output;
+
+type CratesWithRecentDownloads<'a, ST> = BoxedSelectStatement<
+    'a,
+    ST,
+    JoinOn<
+        Join<
+            crates::table,
+            crate_downloads::table,
+            LeftOuter,
+        >,
+        And<
+            Eq<crates::id, crate_downloads::crate_id>,
+            Gt<crate_downloads::date, date<Sub<crate_downloads::date, PgInterval>>>,
+        >,
+    >,
+    Pg,
+>;
+
+use diesel::types::HasSqlType;
+
+fn add_sort_clause<'a, ST>(query: CratesWithRecentDownloads<'a, ST>, sort: Option<&str>) -> CratesWithRecentDownloads<'a, ST> where
+    Pg: HasSqlType<ST>,
+{
+    match sort {
+        Some("downloads") => query.order(crates::downloads.desc()),
+        Some("recent-downloads") | None => query.order(sum(crate_downloads::downloads).desc().nulls_last()),
+        Some(_) => query.order(crates::name.asc()),
+    }
+}
+
 /// Handles the `GET /crates` route.
 /// Returns a list of crates. Called in a variety of scenarios in the
 /// front end, including:
@@ -578,9 +615,6 @@ pub fn index(req: &mut Request) -> CargoResult<Response> {
     let conn = req.db_conn()?;
     let (offset, limit) = req.pagination(10, 100)?;
     let params = req.query();
-    let sort = params.get("sort").map(|s| &**s).unwrap_or(
-        "recent-downloads",
-    );
 
     let recent_downloads = sql::<Nullable<BigInt>>("SUM(crate_downloads.downloads)");
 
@@ -599,14 +633,7 @@ pub fn index(req: &mut Request) -> CargoResult<Response> {
             recent_downloads.clone(),
         ))
         .into_boxed();
-
-    if sort == "downloads" {
-        query = query.order(crates::downloads.desc())
-    } else if sort == "recent-downloads" {
-        query = query.order(recent_downloads.clone().desc().nulls_last())
-    } else {
-        query = query.order(crates::name.asc())
-    }
+    query = add_sort_clause(query, params.get("sort").map(|s| &**s));
 
     if let Some(q_string) = params.get("q") {
         let sort = params.get("sort").map(|s| &**s).unwrap_or("relevance");
